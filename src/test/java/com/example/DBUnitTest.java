@@ -1,58 +1,74 @@
 package com.example;
-import java.io.File;
-import java.io.IOException;
+
+import java.sql.CallableStatement;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.sql.Types;
 
+import org.apache.commons.dbcp.BasicDataSource;
 import org.dbunit.Assertion;
 import org.dbunit.DatabaseUnitException;
 import org.dbunit.database.DatabaseConnection;
+import org.dbunit.database.DatabaseDataSet;
 import org.dbunit.database.IDatabaseConnection;
-import org.dbunit.dataset.DataSetException;
 import org.dbunit.dataset.IDataSet;
-import org.dbunit.dataset.xml.FlatXmlDataSetBuilder;
+import org.dbunit.dataset.filter.ITableFilterSimple;
 import org.dbunit.operation.DatabaseOperation;
 import org.junit.AfterClass;
-import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
 public class DBUnitTest {
-
-	private static final String DATABASE_URL = "jdbc:derby://localhost:1527/firstdb";
-	private static final String SEED_FILE = "src/test/resources/seed.xml";
-	private static IDataSet data;
-	private static IDatabaseConnection conn;
+	
+	private static IDataSet testDataSet;
+	private static IDataSet sourceDataSet;
+	
+	private static IDatabaseConnection testDatabaseConnection;
+	private static IDatabaseConnection sourceDatabaseConnection;
+	private static IDatabaseConnection warehouseDatabaseConnection;
 
 	@BeforeClass
 	public static void handleSetUpOperation() throws Exception {
-		conn = getConnection();
-		data = getDataSet();
+		testDatabaseConnection = DatabaseConnectionFactory.getPooledDatabaseConnection(Database.TEST_REPOSITORY);
+		sourceDatabaseConnection = DatabaseConnectionFactory.getPooledDatabaseConnection(Database.SOURCE_DATABASE);
+		warehouseDatabaseConnection = DatabaseConnectionFactory.getPooledDatabaseConnection(Database.WAREHOUSE_DATABASE);
 
-		DatabaseOperation.CLEAN_INSERT.execute(conn, data);
+		ITableFilterSimple tableFilter = new TableFilterBuilder().withTable("order_header").build();
+
+		testDataSet = getDataSet(tableFilter, testDatabaseConnection);
+		DatabaseOperation.CLEAN_INSERT.execute(sourceDatabaseConnection, testDataSet);
+		sourceDataSet = getDataSet(tableFilter, sourceDatabaseConnection);
 	}
 
-	private static IDataSet getDataSet() throws IOException, DataSetException {
-		File file = new File(SEED_FILE);
-		return new FlatXmlDataSetBuilder().build(file);
-	}
-
-	private static IDatabaseConnection getConnection()
-			throws ClassNotFoundException, SQLException, DatabaseUnitException {
-		return new DatabaseConnection(DriverManager.getConnection(DATABASE_URL));
-	}
 
 	@AfterClass
 	public static void handleTearDownOperation() throws Exception {
-		conn.close();
+		testDatabaseConnection.close();
+		sourceDatabaseConnection.close();
+		warehouseDatabaseConnection.close();
 	}
-	
+
 	@Test
-	public void shouldHavePopulatedSeedDataInDatabase() throws Exception {
-		IDatabaseConnection conn = getConnection();
-		IDataSet databaseDataSet = conn.createDataSet();
-		Assertion.assertEquals(data, databaseDataSet);
-		Assert.assertEquals(3, ((IDataSet) databaseDataSet).getTable("FIRSTTABLE").getRowCount());
+	public void TestRed() throws Exception {
+		Assertion.assertEquals(testDataSet, sourceDataSet);
+		
+		RedJob job = new RedJob(warehouseDatabaseConnection, "LoadOrderHeader");
+		job.execute();
+
+		// Wait for job to finish
+
+		ITableFilterSimple tableFilter = new TableFilterBuilder().withTable("load_order_header").build();
+		IDataSet warehouseDataSet = getDataSet(tableFilter,warehouseDatabaseConnection);
+		IDataSet testRepositoryDataSet = getDataSet(tableFilter,testDatabaseConnection);
+		
+		Assertion.assertEquals(testRepositoryDataSet, warehouseDataSet);
+
 	}
+
+	private static IDataSet getDataSet(ITableFilterSimple tableFilter, IDatabaseConnection connection)
+			throws SQLException {
+		return new DatabaseDataSet(connection, false, tableFilter);
+	}
+
 
 }
